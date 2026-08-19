@@ -8,4 +8,4 @@ The planned architecture separates the agent workflow, retrieval-augmented gener
 
 ## Current Status
 
-Initial scaffold only.
+The project currently has a minimal LangGraph agent and one order-status tool. The five sample orders are temporary in-memory learning data and will later be replaced by a real e-commerce dataset stored in PostgreSQL on AWS RDS.
