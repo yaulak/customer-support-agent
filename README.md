@@ -8,4 +8,4 @@ The planned architecture separates the agent workflow, retrieval-augmented gener
 
 ## Current Status
 
-The project currently has a minimal LangGraph agent with a PostgreSQL order-status tool and local policy retrieval from fictional Markdown documents through a persistent Chroma index.
+The project currently has a minimal LangGraph agent with PostgreSQL order lookup and support-ticket creation, plus local policy retrieval from fictional Markdown documents through a persistent Chroma index.

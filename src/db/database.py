@@ -1,4 +1,16 @@
-from sqlalchemy import Column, DateTime, MetaData, String, Table, create_engine, select
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    create_engine,
+    func,
+    insert,
+    select,
+)
 
 from src.config import DATABASE_URL
 
@@ -23,6 +35,22 @@ orders_table = Table(
     Column("order_estimated_delivery_date", DateTime, nullable=False),
 )
 
+support_tickets_table = Table(
+    "support_tickets",
+    metadata,
+    Column("ticket_id", Integer, primary_key=True, autoincrement=True),
+    Column("order_id", String(32)),
+    Column("issue_type", String(64), nullable=False),
+    Column("description", Text, nullable=False),
+    Column("status", String(32), nullable=False, server_default="open"),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+)
+
 
 def fetch_order_by_id(order_id: str) -> dict | None:
     query = select(orders_table).where(orders_table.c.order_id == order_id)
@@ -31,3 +59,24 @@ def fetch_order_by_id(order_id: str) -> dict | None:
         order = connection.execute(query).mappings().first()
 
     return dict(order) if order else None
+
+
+def insert_support_ticket(
+    description: str,
+    issue_type: str,
+    order_id: str | None = None,
+) -> dict:
+    statement = (
+        insert(support_tickets_table)
+        .values(
+            order_id=order_id,
+            issue_type=issue_type,
+            description=description,
+        )
+        .returning(*support_tickets_table.c)
+    )
+
+    with engine.begin() as connection:
+        ticket = connection.execute(statement).mappings().one()
+
+    return dict(ticket)
