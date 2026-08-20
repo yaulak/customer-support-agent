@@ -5,12 +5,18 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from src.agent.state import AgentState
 from src.config import OPENAI_API_KEY
+from src.tools.order_cancellation import cancel_order
 from src.tools.order_status import get_order_status
 from src.tools.support_docs import search_support_docs
 from src.tools.support_tickets import create_support_ticket
 
 
-tools = [get_order_status, search_support_docs, create_support_ticket]
+tools = [
+    get_order_status,
+    search_support_docs,
+    create_support_ticket,
+    cancel_order,
+]
 model = ChatOpenAI(model="gpt-5.6-terra", api_key=OPENAI_API_KEY, reasoning_effort="none",).bind_tools(tools)
 
 

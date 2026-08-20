@@ -10,6 +10,7 @@ from sqlalchemy import (
     func,
     insert,
     select,
+    update,
 )
 
 from src.config import DATABASE_URL
@@ -80,3 +81,20 @@ def insert_support_ticket(
         ticket = connection.execute(statement).mappings().one()
 
     return dict(ticket)
+
+
+def cancel_order_by_id(order_id: str) -> dict | None:
+    statement = (
+        update(orders_table)
+        .where(
+            orders_table.c.order_id == order_id,
+            orders_table.c.order_status == "processing",
+        )
+        .values(order_status="cancelled")
+        .returning(*orders_table.c)
+    )
+
+    with engine.begin() as connection:
+        order = connection.execute(statement).mappings().first()
+
+    return dict(order) if order else None
