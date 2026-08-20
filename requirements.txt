@@ -1,6 +1,8 @@
 langchain
 langgraph
 langchain-openai
+langchain-chroma
+langchain-text-splitters
 fastapi
 uvicorn
 python-dotenv

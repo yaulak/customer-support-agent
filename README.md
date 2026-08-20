@@ -8,4 +8,4 @@ The planned architecture separates the agent workflow, retrieval-augmented gener
 
 ## Current Status
 
-The project currently has a minimal LangGraph agent and one order-status tool backed by Olist order data in PostgreSQL. The CSV is loaded manually with the included loader script.
+The project currently has a minimal LangGraph agent with a PostgreSQL order-status tool and local policy retrieval from fictional Markdown documents through a persistent Chroma index.
