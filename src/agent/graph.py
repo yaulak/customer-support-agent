@@ -1,10 +1,10 @@
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.redis import RedisSaver
 from langgraph.graph import START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from src.agent.state import AgentState
-from src.config import OPENAI_API_KEY
+from src.config import OPENAI_API_KEY, REDIS_URL
 from src.tools.order_cancellation import cancel_order
 from src.tools.order_status import get_order_status
 from src.tools.support_docs import search_support_docs
@@ -32,5 +32,9 @@ graph_builder.add_edge(START, "model")
 graph_builder.add_conditional_edges("model", tools_condition)
 graph_builder.add_edge("tools", "model")
 
-checkpointer = InMemorySaver()
+if not REDIS_URL:
+    raise ValueError("REDIS_URL is not set. Add it to your .env file.")
+
+checkpointer = RedisSaver(redis_url=REDIS_URL)
+checkpointer.setup()
 graph = graph_builder.compile(checkpointer=checkpointer)

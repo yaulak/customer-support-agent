@@ -1,5 +1,6 @@
 langchain
 langgraph
+langgraph-checkpoint-redis
 langchain-openai
 langchain-chroma
 langchain-text-splitters
