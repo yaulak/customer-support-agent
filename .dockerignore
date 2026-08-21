@@ -1,0 +1,15 @@
+.venv/
+.git/
+.env
+.env.*
+**/__pycache__/
+**/*.py[cod]
+.idea/
+.pytest_cache/
+.DS_Store
+.agents/
+.codex/
+data/raw/
+data/processed/chroma/
+data/evaluation/
+tests/
