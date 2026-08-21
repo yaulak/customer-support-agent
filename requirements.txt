@@ -11,3 +11,4 @@ pydantic
 pytest
 sqlalchemy
 psycopg[binary]
+boto3

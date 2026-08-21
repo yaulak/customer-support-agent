@@ -1,27 +1,52 @@
-from pathlib import Path
+from pathlib import PurePosixPath
 
+import boto3
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-
-SUPPORT_DOCS_DIRECTORY = (
-    Path(__file__).resolve().parents[2] / "data" / "support_docs"
+from src.config import (
+    AWS_ACCESS_KEY_ID,
+    AWS_REGION,
+    AWS_SECRET_ACCESS_KEY,
+    S3_BUCKET_NAME,
 )
 
 
 def load_support_documents() -> list[Document]:
+    if not S3_BUCKET_NAME:
+        raise ValueError("S3_BUCKET_NAME is not set. Add it to your .env file.")
+
+    s3_client = boto3.client(
+        "s3",
+        region_name=AWS_REGION,
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    )
+    paginator = s3_client.get_paginator("list_objects_v2")
+    markdown_keys = []
+
+    for page in paginator.paginate(Bucket=S3_BUCKET_NAME):
+        for s3_object in page.get("Contents", []):
+            key = s3_object["Key"]
+            if key.lower().endswith(".md"):
+                markdown_keys.append(key)
+
     documents = []
 
-    for path in sorted(SUPPORT_DOCS_DIRECTORY.glob("*.md")):
+    for key in sorted(markdown_keys):
+        response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=key)
+        text = response["Body"].read().decode("utf-8")
         documents.append(
             Document(
-                page_content=path.read_text(encoding="utf-8"),
-                metadata={"source": path.name},
+                page_content=text,
+                metadata={"source": PurePosixPath(key).name},
             )
         )
 
     if not documents:
-        raise FileNotFoundError(f"No Markdown files found in {SUPPORT_DOCS_DIRECTORY}")
+        raise FileNotFoundError(
+            f"No Markdown files found in S3 bucket {S3_BUCKET_NAME}."
+        )
 
     return documents
 

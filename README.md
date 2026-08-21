@@ -8,7 +8,7 @@ The planned architecture separates the agent workflow, retrieval-augmented gener
 
 ## Current Status
 
-The project currently has a minimal LangGraph agent available through a CLI and FastAPI HTTP API, with Redis-backed conversation checkpoints, PostgreSQL tools, human-approved order cancellation, local policy retrieval through Chroma, and a small local evaluation suite.
+The project currently has a minimal LangGraph agent available through a CLI and FastAPI HTTP API, with Redis-backed conversation checkpoints, PostgreSQL tools, human-approved order cancellation, S3-sourced policy ingestion into Chroma, and a small local evaluation suite.
 
 ## Docker
 
