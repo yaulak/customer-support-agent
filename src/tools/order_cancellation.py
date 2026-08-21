@@ -3,10 +3,18 @@ from langgraph.types import interrupt
 
 from src.db.database import cancel_order_by_id, fetch_order_by_id
 
-
 @tool
 def cancel_order(order_id: str) -> str:
-    """Request cancellation of a processing order after human approval."""
+    """
+    Handle any explicit user request to cancel an order.
+
+    Use this tool whenever the user asks to cancel an order,
+    regardless of the order's current status.
+
+    This tool performs the deterministic eligibility checks itself
+    and safely rejects orders that cannot be cancelled.
+    """
+
     order = fetch_order_by_id(order_id)
 
     if order is None:

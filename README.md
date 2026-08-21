@@ -8,4 +8,4 @@ The planned architecture separates the agent workflow, retrieval-augmented gener
 
 ## Current Status
 
-The project currently has a minimal LangGraph agent with Redis-backed conversation checkpoints, PostgreSQL order lookup, support-ticket creation, human-approved order cancellation, and local policy retrieval from fictional Markdown documents through a persistent Chroma index.
+The project currently has a minimal LangGraph agent with Redis-backed conversation checkpoints, PostgreSQL order lookup, support-ticket creation, human-approved order cancellation, local policy retrieval through Chroma, and a small local routing and retrieval evaluation suite.
