@@ -54,6 +54,19 @@ def _thread_id(runtime: ToolRuntime) -> str:
     return str(thread_id) if thread_id else ""
 
 
+def create_pending_review_after_interrupt(
+    interrupt_payload: dict[str, Any],
+    thread_id: str,
+) -> tuple[dict, bool]:
+    """Create the ticket after LangGraph has saved the interrupt checkpoint."""
+    return get_or_create_pending_cancellation_ticket(
+        order_id=interrupt_payload["order_id"],
+        thread_id=thread_id,
+        review_reason=interrupt_payload["reason"],
+        request_details=interrupt_payload["request_details"],
+    )
+
+
 def _close_pending_review(order_id: str, status: str) -> int | None:
     ticket = fetch_pending_cancellation_ticket(order_id)
     if ticket is None:
@@ -159,14 +172,9 @@ def cancel_order(order_id: str, runtime: ToolRuntime) -> dict[str, Any]:
     review_reason = (
         f"Orders with status '{current_status}' require admin review."
     )
-    ticket, created = get_or_create_pending_cancellation_ticket(
-        order_id=order_id,
-        thread_id=thread_id,
-        review_reason=review_reason,
-        request_details=_latest_user_request(runtime),
-    )
+    ticket = fetch_pending_cancellation_ticket(order_id)
 
-    if not created and ticket.get("thread_id") != thread_id:
+    if ticket is not None and ticket.get("thread_id") != thread_id:
         return _result(
             outcome="pending_admin_review",
             order_id=order_id,
@@ -182,7 +190,8 @@ def cancel_order(order_id: str, runtime: ToolRuntime) -> dict[str, Any]:
             "requested_action": "cancel_order",
             "order_id": order_id,
             "reason": review_reason,
-            "ticket_id": ticket["ticket_id"],
+            "request_details": _latest_user_request(runtime),
+            "ticket_id": ticket["ticket_id"] if ticket else None,
             "status": PENDING_REVIEW,
             "question": (
                 f"Should an authorized admin approve cancellation of order "
@@ -190,6 +199,23 @@ def cancel_order(order_id: str, runtime: ToolRuntime) -> dict[str, Any]:
             ),
         }
     )
+
+    if isinstance(decision, dict) and decision.get("decision") == "setup_failed":
+        return _result(
+            outcome="review_setup_failed",
+            order_id=order_id,
+            reason="The admin review could not be created safely.",
+            status=current_status,
+        )
+
+    ticket = fetch_pending_cancellation_ticket(order_id)
+    if ticket is None:
+        return _result(
+            outcome="review_setup_failed",
+            order_id=order_id,
+            reason="No active admin review ticket was found.",
+            status=current_status,
+        )
 
     approved = (
         isinstance(decision, dict)

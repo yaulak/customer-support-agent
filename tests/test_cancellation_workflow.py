@@ -33,6 +33,16 @@ def build_cancellation_tool_graph():
     return builder.compile(checkpointer=InMemorySaver())
 
 
+class ChatGraphAdapter:
+    def __init__(self) -> None:
+        self.graph = build_cancellation_tool_graph()
+
+    def invoke(self, graph_input, config):
+        if isinstance(graph_input, Command):
+            return self.graph.invoke(graph_input, config=config)
+        return self.graph.invoke(cancellation_request(), config=config)
+
+
 def cancellation_request() -> dict:
     return {
         "messages": [
@@ -58,6 +68,14 @@ def parsed_tool_result(result: dict) -> dict:
     return json.loads(message.content)
 
 
+def persist_review(result: dict, thread_id: str) -> dict:
+    ticket, _ = cancellation.create_pending_review_after_interrupt(
+        result["__interrupt__"][0].value,
+        thread_id,
+    )
+    return ticket
+
+
 @pytest.fixture
 def review_database(monkeypatch):
     state = {
@@ -78,6 +96,16 @@ def review_database(monkeypatch):
             return dict(ticket)
         return None
 
+    def fetch_pending_by_thread(thread_id: str) -> dict | None:
+        ticket = state["ticket"]
+        if (
+            ticket
+            and ticket["thread_id"] == thread_id
+            and ticket["status"] == cancellation.PENDING_REVIEW
+        ):
+            return dict(ticket)
+        return None
+
     def get_or_create(
         order_id: str,
         thread_id: str,
@@ -90,7 +118,7 @@ def review_database(monkeypatch):
 
         state["tickets_created"] += 1
         state["ticket"] = {
-            "ticket_id": 101,
+            "ticket_id": 100 + state["tickets_created"],
             "order_id": order_id,
             "issue_type": "order_cancellation",
             "status": cancellation.PENDING_REVIEW,
@@ -143,6 +171,8 @@ def review_database(monkeypatch):
         update_ticket,
     )
     monkeypatch.setattr(cancellation, "cancel_order_by_id", cancel_order)
+    state["fetch_pending_by_thread"] = fetch_pending_by_thread
+    state["update_ticket"] = update_ticket
     return state
 
 
@@ -178,8 +208,10 @@ def test_invoiced_order_creates_one_ticket_and_interrupts(review_database):
     config = {"configurable": {"thread_id": "review-thread"}}
 
     result = graph.invoke(cancellation_request(), config=config)
+    ticket = persist_review(result, "review-thread")
 
-    assert result["__interrupt__"][0].value["ticket_id"] == 101
+    assert result["__interrupt__"][0].value["ticket_id"] is None
+    assert ticket["ticket_id"] == 101
     assert result["__interrupt__"][0].value["status"] == "PENDING_REVIEW"
     assert review_database["tickets_created"] == 1
     assert review_database["order_status"] == "invoiced"
@@ -188,7 +220,8 @@ def test_invoiced_order_creates_one_ticket_and_interrupts(review_database):
 def test_admin_approve_resumes_and_cancels(review_database):
     graph = build_cancellation_tool_graph()
     config = {"configurable": {"thread_id": "approve-thread"}}
-    graph.invoke(cancellation_request(), config=config)
+    interrupted = graph.invoke(cancellation_request(), config=config)
+    persist_review(interrupted, "approve-thread")
 
     result = graph.invoke(
         Command(resume={"decision": "approve", "ticket_id": 101}),
@@ -206,7 +239,8 @@ def test_admin_approve_resumes_and_cancels(review_database):
 def test_admin_deny_resumes_without_cancelling(review_database):
     graph = build_cancellation_tool_graph()
     config = {"configurable": {"thread_id": "deny-thread"}}
-    graph.invoke(cancellation_request(), config=config)
+    interrupted = graph.invoke(cancellation_request(), config=config)
+    persist_review(interrupted, "deny-thread")
 
     result = graph.invoke(
         Command(resume={"decision": "deny", "ticket_id": 101}),
@@ -265,7 +299,8 @@ def test_nonexistent_order_is_safe(monkeypatch):
 def test_repeated_pending_request_does_not_create_duplicate(review_database):
     first_graph = build_cancellation_tool_graph()
     first_config = {"configurable": {"thread_id": "original-thread"}}
-    first_graph.invoke(cancellation_request(), config=first_config)
+    interrupted = first_graph.invoke(cancellation_request(), config=first_config)
+    persist_review(interrupted, "original-thread")
 
     second_graph = build_cancellation_tool_graph()
     second_config = {"configurable": {"thread_id": "retry-thread"}}
@@ -294,6 +329,101 @@ def load_api_with_fake_graph(monkeypatch, fake_graph):
     monkeypatch.setitem(sys.modules, "src.agent.graph", fake_graph_module)
     sys.modules.pop("src.api.app", None)
     return importlib.import_module("src.api.app")
+
+
+def configure_review_api(api_module, monkeypatch, review_database) -> None:
+    monkeypatch.setattr(api_module, "ADMIN_API_KEY", "test-admin-key")
+    monkeypatch.setattr(
+        api_module,
+        "fetch_pending_cancellation_ticket_by_thread_id",
+        review_database["fetch_pending_by_thread"],
+    )
+    monkeypatch.setattr(
+        api_module,
+        "fetch_support_ticket_by_id",
+        lambda ticket_id: (
+            dict(review_database["ticket"])
+            if review_database["ticket"]
+            and review_database["ticket"]["ticket_id"] == ticket_id
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        api_module,
+        "update_support_ticket_status",
+        review_database["update_ticket"],
+    )
+
+
+def test_chat_retry_after_deny_reinterrupts_on_same_thread(
+    monkeypatch,
+    review_database,
+):
+    api_module = load_api_with_fake_graph(monkeypatch, ChatGraphAdapter())
+    configure_review_api(api_module, monkeypatch, review_database)
+    request = api_module.ChatRequest(
+        message="Cancel order order-1",
+        thread_id="same-thread",
+    )
+
+    first = api_module.chat(request)
+    denied = api_module._resume_admin_review(101, "deny")
+    retried = api_module.chat(request)
+
+    assert first.approval_required is True
+    assert denied.ticket_status == "DENIED"
+    assert retried.approval_required is True
+    assert retried.interrupt["ticket_id"] == 102
+    assert review_database["tickets_created"] == 2
+
+
+def test_interrupt_failure_cannot_create_pending_ticket(monkeypatch):
+    monkeypatch.setattr(
+        cancellation,
+        "fetch_order_by_id",
+        lambda order_id: {"order_id": order_id, "order_status": "invoiced"},
+    )
+    monkeypatch.setattr(
+        cancellation,
+        "fetch_pending_cancellation_ticket",
+        lambda order_id: None,
+    )
+    monkeypatch.setattr(
+        cancellation,
+        "get_or_create_pending_cancellation_ticket",
+        lambda **kwargs: pytest.fail("Ticket was created before checkpointing."),
+    )
+    monkeypatch.setattr(
+        cancellation,
+        "interrupt",
+        lambda payload: (_ for _ in ()).throw(RuntimeError("checkpoint failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="checkpoint failed"):
+        cancellation.cancel_order.func("order-1", FakeRuntime())
+
+
+def test_existing_pending_review_reports_approval_required(
+    monkeypatch,
+    review_database,
+):
+    graph = build_cancellation_tool_graph()
+    config = {"configurable": {"thread_id": "pending-thread"}}
+    interrupted = graph.invoke(cancellation_request(), config=config)
+    persist_review(interrupted, "pending-thread")
+
+    api_module = load_api_with_fake_graph(monkeypatch, ChatGraphAdapter())
+    configure_review_api(api_module, monkeypatch, review_database)
+    response = api_module.chat(
+        api_module.ChatRequest(
+            message="Cancel order order-1",
+            thread_id="new-thread",
+        )
+    )
+
+    assert response.approval_required is True
+    assert response.interrupt["ticket_id"] == 101
+    assert review_database["tickets_created"] == 1
 
 
 def test_admin_endpoint_rejects_missing_and_invalid_api_keys(monkeypatch):

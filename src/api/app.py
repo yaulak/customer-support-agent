@@ -1,15 +1,24 @@
+import json
 import secrets
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import BaseModel
 
 from src.agent.graph import graph
 from src.config import ADMIN_API_KEY
-from src.db.database import fetch_support_ticket_by_id
-from src.tools.order_cancellation import PENDING_REVIEW
+from src.db.database import (
+    fetch_pending_cancellation_ticket_by_thread_id,
+    fetch_support_ticket_by_id,
+    update_support_ticket_status,
+)
+from src.tools.order_cancellation import (
+    PENDING_REVIEW,
+    REJECTED,
+    create_pending_review_after_interrupt,
+)
 
 
 app = FastAPI(title="Customer Support Agent")
@@ -49,6 +58,29 @@ def require_admin_api_key(
         raise HTTPException(status_code=403, detail="Invalid admin API key.")
 
 
+def _pending_review_payload(ticket: dict) -> dict[str, Any]:
+    return {
+        "outcome": "pending_admin_review",
+        "requested_action": "cancel_order",
+        "order_id": ticket["order_id"],
+        "reason": ticket.get("review_reason"),
+        "ticket_id": ticket["ticket_id"],
+        "status": PENDING_REVIEW,
+    }
+
+
+def _pending_review_from_messages(messages: list) -> dict | None:
+    for message in reversed(messages):
+        if isinstance(message, ToolMessage) and message.name == "cancel_order":
+            try:
+                result = json.loads(message.content)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if result.get("outcome") == "pending_admin_review":
+                return result
+    return None
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="healthy")
@@ -57,19 +89,65 @@ def health() -> HealthResponse:
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     config = {"configurable": {"thread_id": request.thread_id}}
+    pending_ticket = fetch_pending_cancellation_ticket_by_thread_id(
+        request.thread_id
+    )
+    if pending_ticket is not None:
+        return ChatResponse(
+            approval_required=True,
+            interrupt=_pending_review_payload(pending_ticket),
+        )
+
     result = graph.invoke(
         {"messages": [HumanMessage(content=request.message)]},
         config=config,
     )
 
     if result.get("__interrupt__"):
-        interrupt_payload = result["__interrupt__"][0].value
+        interrupt_payload = dict(result["__interrupt__"][0].value)
+        try:
+            ticket, _ = create_pending_review_after_interrupt(
+                interrupt_payload,
+                request.thread_id,
+            )
+        except Exception as error:
+            pending_ticket = fetch_pending_cancellation_ticket_by_thread_id(
+                request.thread_id
+            )
+            if pending_ticket is not None:
+                update_support_ticket_status(
+                    pending_ticket["ticket_id"],
+                    REJECTED,
+                    expected_status=PENDING_REVIEW,
+                )
+            try:
+                graph.invoke(
+                    Command(
+                        resume={"decision": "setup_failed", "ticket_id": None}
+                    ),
+                    config=config,
+                )
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=503,
+                detail="The admin review could not be created safely.",
+            ) from error
+
         return ChatResponse(
             approval_required=True,
-            interrupt=interrupt_payload,
+            interrupt=_pending_review_payload(ticket),
         )
 
     newest_response = result["messages"][-1].content
+    pending_result = _pending_review_from_messages(result["messages"])
+    if pending_result is not None:
+        return ChatResponse(
+            response=str(newest_response),
+            approval_required=True,
+            interrupt=pending_result,
+        )
+
     return ChatResponse(response=str(newest_response))
 
 
