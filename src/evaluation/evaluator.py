@@ -33,8 +33,40 @@ def fake_insert_support_ticket(
     }
 
 
-def fake_cancel_order(order_id: str) -> dict:
+def fake_cancel_order(
+    order_id: str,
+    allowed_statuses=None,
+    review_ticket_id: int | None = None,
+) -> dict:
     return {"order_id": order_id, "order_status": "cancelled"}
+
+
+def fake_pending_cancellation_ticket(
+    order_id: str,
+    thread_id: str,
+    review_reason: str,
+    request_details: str,
+) -> tuple[dict, bool]:
+    return (
+        {
+            "ticket_id": 1,
+            "order_id": order_id,
+            "issue_type": "order_cancellation",
+            "status": "PENDING_REVIEW",
+            "thread_id": thread_id,
+            "review_reason": review_reason,
+            "request_details": request_details,
+        },
+        True,
+    )
+
+
+def fake_update_ticket_status(
+    ticket_id: int,
+    status: str,
+    expected_status: str | None = None,
+) -> dict:
+    return {"ticket_id": ticket_id, "status": status}
 
 
 def get_called_tools(messages: list) -> list[str]:
@@ -73,7 +105,16 @@ def run_case(case: dict) -> dict:
     )
 
     while result.get("__interrupt__"):
-        result = graph.invoke(Command(resume=False), config=config)
+        interrupt_payload = result["__interrupt__"][0].value
+        result = graph.invoke(
+            Command(
+                resume={
+                    "decision": "deny",
+                    "ticket_id": interrupt_payload["ticket_id"],
+                }
+            ),
+            config=config,
+        )
 
     messages = result["messages"]
     called_tools = get_called_tools(messages)
@@ -162,6 +203,12 @@ def main() -> None:
     ), patch(
         "src.tools.order_cancellation.cancel_order_by_id",
         fake_cancel_order,
+    ), patch(
+        "src.tools.order_cancellation.get_or_create_pending_cancellation_ticket",
+        fake_pending_cancellation_ticket,
+    ), patch(
+        "src.tools.order_cancellation.update_support_ticket_status",
+        fake_update_ticket_status,
     ):
         results = []
         for case in cases:

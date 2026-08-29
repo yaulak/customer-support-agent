@@ -1,8 +1,8 @@
-from src.db.database import engine, metadata
+from src.db.database import initialize_database
 
 
 def main() -> None:
-    metadata.create_all(engine)
+    initialize_database()
     print("Database tables are ready.")
 
 
