@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from src.agent.graph import graph
 from src.config import ADMIN_API_KEY
 from src.db.database import (
+    fetch_denied_cancellation_ticket,
     fetch_pending_cancellation_ticket_by_thread_id,
     fetch_support_ticket_by_id,
     update_support_ticket_status,
@@ -93,6 +94,22 @@ def chat(request: ChatRequest) -> ChatResponse:
         request.thread_id
     )
     if pending_ticket is not None:
+        denied_ticket = fetch_denied_cancellation_ticket(
+            pending_ticket["order_id"]
+        )
+        if denied_ticket is not None:
+            update_support_ticket_status(
+                pending_ticket["ticket_id"],
+                REJECTED,
+                expected_status=PENDING_REVIEW,
+            )
+            return ChatResponse(
+                response=(
+                    "Your cancellation request was previously denied by an "
+                    "administrator."
+                )
+            )
+
         return ChatResponse(
             approval_required=True,
             interrupt=_pending_review_payload(pending_ticket),

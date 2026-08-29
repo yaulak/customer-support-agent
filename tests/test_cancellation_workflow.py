@@ -106,6 +106,16 @@ def review_database(monkeypatch):
             return dict(ticket)
         return None
 
+    def fetch_denied(order_id: str) -> dict | None:
+        ticket = state["ticket"]
+        if (
+            ticket
+            and ticket["order_id"] == order_id
+            and ticket["status"] == cancellation.DENIED
+        ):
+            return dict(ticket)
+        return None
+
     def get_or_create(
         order_id: str,
         thread_id: str,
@@ -162,6 +172,11 @@ def review_database(monkeypatch):
     )
     monkeypatch.setattr(
         cancellation,
+        "fetch_denied_cancellation_ticket",
+        fetch_denied,
+    )
+    monkeypatch.setattr(
+        cancellation,
         "get_or_create_pending_cancellation_ticket",
         get_or_create,
     )
@@ -172,6 +187,7 @@ def review_database(monkeypatch):
     )
     monkeypatch.setattr(cancellation, "cancel_order_by_id", cancel_order)
     state["fetch_pending_by_thread"] = fetch_pending_by_thread
+    state["fetch_denied"] = fetch_denied
     state["update_ticket"] = update_ticket
     return state
 
@@ -335,6 +351,11 @@ def configure_review_api(api_module, monkeypatch, review_database) -> None:
     monkeypatch.setattr(api_module, "ADMIN_API_KEY", "test-admin-key")
     monkeypatch.setattr(
         api_module,
+        "fetch_denied_cancellation_ticket",
+        review_database["fetch_denied"],
+    )
+    monkeypatch.setattr(
+        api_module,
         "fetch_pending_cancellation_ticket_by_thread_id",
         review_database["fetch_pending_by_thread"],
     )
@@ -355,9 +376,11 @@ def configure_review_api(api_module, monkeypatch, review_database) -> None:
     )
 
 
-def test_chat_retry_after_deny_reinterrupts_on_same_thread(
+@pytest.mark.parametrize("retry_thread", ["same-thread", "new-thread"])
+def test_chat_retry_after_deny_is_terminal(
     monkeypatch,
     review_database,
+    retry_thread,
 ):
     api_module = load_api_with_fake_graph(monkeypatch, ChatGraphAdapter())
     configure_review_api(api_module, monkeypatch, review_database)
@@ -368,13 +391,54 @@ def test_chat_retry_after_deny_reinterrupts_on_same_thread(
 
     first = api_module.chat(request)
     denied = api_module._resume_admin_review(101, "deny")
-    retried = api_module.chat(request)
+    retried = api_module.chat(
+        api_module.ChatRequest(
+            message="Cancel order order-1",
+            thread_id=retry_thread,
+        )
+    )
 
     assert first.approval_required is True
     assert denied.ticket_status == "DENIED"
-    assert retried.approval_required is True
-    assert retried.interrupt["ticket_id"] == 102
-    assert review_database["tickets_created"] == 2
+    assert retried.approval_required is False
+    assert "previously denied" in retried.response
+    assert review_database["tickets_created"] == 1
+
+
+def test_denied_review_closes_stale_pending_ticket(monkeypatch):
+    stale_ticket = {
+        "ticket_id": 102,
+        "order_id": "order-1",
+        "status": "PENDING_REVIEW",
+        "thread_id": "stale-thread",
+    }
+    denied_ticket = {"ticket_id": 101, "order_id": "order-1", "status": "DENIED"}
+    api_module = load_api_with_fake_graph(monkeypatch, object())
+    monkeypatch.setattr(
+        api_module,
+        "fetch_pending_cancellation_ticket_by_thread_id",
+        lambda thread_id: stale_ticket,
+    )
+    monkeypatch.setattr(
+        api_module,
+        "fetch_denied_cancellation_ticket",
+        lambda order_id: denied_ticket,
+    )
+    monkeypatch.setattr(
+        api_module,
+        "update_support_ticket_status",
+        lambda ticket_id, status, expected_status: stale_ticket.update(
+            status=status
+        ),
+    )
+
+    response = api_module.chat(
+        api_module.ChatRequest(message="Cancel again", thread_id="stale-thread")
+    )
+
+    assert response.approval_required is False
+    assert "previously denied" in response.response
+    assert stale_ticket["status"] == "REJECTED"
 
 
 def test_interrupt_failure_cannot_create_pending_ticket(monkeypatch):
@@ -386,6 +450,11 @@ def test_interrupt_failure_cannot_create_pending_ticket(monkeypatch):
     monkeypatch.setattr(
         cancellation,
         "fetch_pending_cancellation_ticket",
+        lambda order_id: None,
+    )
+    monkeypatch.setattr(
+        cancellation,
+        "fetch_denied_cancellation_ticket",
         lambda order_id: None,
     )
     monkeypatch.setattr(

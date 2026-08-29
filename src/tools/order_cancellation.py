@@ -6,6 +6,7 @@ from langgraph.types import interrupt
 
 from src.db.database import (
     cancel_order_by_id,
+    fetch_denied_cancellation_ticket,
     fetch_order_by_id,
     fetch_pending_cancellation_ticket,
     get_or_create_pending_cancellation_ticket,
@@ -172,6 +173,27 @@ def cancel_order(order_id: str, runtime: ToolRuntime) -> dict[str, Any]:
     review_reason = (
         f"Orders with status '{current_status}' require admin review."
     )
+    denied_ticket = fetch_denied_cancellation_ticket(order_id)
+    if denied_ticket is not None:
+        stale_ticket = fetch_pending_cancellation_ticket(order_id)
+        if stale_ticket is not None:
+            update_support_ticket_status(
+                stale_ticket["ticket_id"],
+                REJECTED,
+                expected_status=PENDING_REVIEW,
+            )
+        return _result(
+            outcome="previously_denied",
+            order_id=order_id,
+            reason=(
+                "Your cancellation request was previously denied by an "
+                "administrator."
+            ),
+            status=current_status,
+            ticket_id=denied_ticket["ticket_id"],
+            ticket_status=DENIED,
+        )
+
     ticket = fetch_pending_cancellation_ticket(order_id)
 
     if ticket is not None and ticket.get("thread_id") != thread_id:

@@ -134,6 +134,23 @@ def fetch_pending_cancellation_ticket(order_id: str) -> dict | None:
     return dict(ticket) if ticket else None
 
 
+def fetch_denied_cancellation_ticket(order_id: str) -> dict | None:
+    query = (
+        select(support_tickets_table)
+        .where(
+            support_tickets_table.c.order_id == order_id,
+            support_tickets_table.c.issue_type == "order_cancellation",
+            support_tickets_table.c.status == "DENIED",
+        )
+        .order_by(support_tickets_table.c.ticket_id.desc())
+    )
+
+    with engine.connect() as connection:
+        ticket = connection.execute(query).mappings().first()
+
+    return dict(ticket) if ticket else None
+
+
 def fetch_pending_cancellation_ticket_by_thread_id(
     thread_id: str,
 ) -> dict | None:
